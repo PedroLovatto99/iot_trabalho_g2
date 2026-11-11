@@ -1,0 +1,7 @@
+# Segredos: nunca vao para o GitHub
+sketch/config.h
+.dev.vars
+
+# Gerados por ferramentas
+node_modules/
+.wrangler/

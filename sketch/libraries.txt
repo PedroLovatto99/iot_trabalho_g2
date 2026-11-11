@@ -1,0 +1,4 @@
+# Bibliotecas do projeto (o Wokwi instala sozinho a partir desta lista)
+PubSubClient
+DHT sensor library
+Adafruit Unified Sensor

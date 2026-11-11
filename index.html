@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FrioSeguro · Geladeira de vacinas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<!-- MQTT sobre WebSocket no navegador -->
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  /* ============================================================
+     FrioSeguro - painel da geladeira de vacinas (Etapa 6)
+     Fonte Atkinson Hyperlegible: feita para leitura facil, inclusive
+     de longe, que e' como a equipe olha o painel no posto.
+     ============================================================ */
+  :root {
+    --gelo:     #EAF1F3;   /* fundo */
+    --papel:    #FFFFFF;
+    --tinta:    #16323C;   /* texto principal */
+    --apagado:  #5D7680;   /* texto secundario */
+    --linha:    #CFDDE2;
+    --faixa:    #2E8B78;   /* dentro de 2-8 C */
+    --faixa-bg: #D7EEE8;
+    --alerta:   #C3303A;   /* fora da faixa, alarme */
+    --alerta-bg:#FBE3E4;
+    --silencio: #A86A12;   /* buzzer silenciado */
+    --offline:  #6B7B82;
+    --raio: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--gelo);
+    color: var(--tinta);
+    font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.45;
+  }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid #1D6FA3; outline-offset: 2px; }
+
+  /* ---------- faixa de situacao (topo) ---------- */
+  .situacao {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px;
+    padding: 12px clamp(16px, 4vw, 40px);
+    background: var(--tinta); color: #fff;
+  }
+  .situacao strong { font-size: 1.05rem; }
+  .situacao .conexao { margin-left: auto; color: #C9DCE2; font-size: .95rem; }
+  .situacao.em-alarme { background: var(--alerta); }
+  .situacao.em-alarme .conexao { color: #FFE3E5; }
+  .situacao.desligada { background: var(--offline); }
+  .ponto { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .4em; background: #7FD1BF; vertical-align: .05em; }
+  .desligada .ponto { background: #D9E0E3; }
+  .em-alarme .ponto { background: #fff; }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+    gap: 22px;
+    padding: 22px clamp(16px, 4vw, 40px) 40px;
+    max-width: 1280px; margin: 0 auto;
+  }
+  @media (max-width: 880px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  section { background: var(--papel); border-radius: var(--raio); padding: 20px 22px; }
+  h1, h2 { margin: 0; font-weight: 700; }
+  h2 { font-size: 1.15rem; margin-bottom: 12px; }
+  .coluna { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; align-content: start; min-width: 0; }
+
+  /* ---------- o termometro: o elemento principal ---------- */
+  .agora h1 { font-size: 1rem; color: var(--apagado); font-weight: 400; }
+  .temp {
+    font-size: clamp(4.5rem, 14vw, 7.5rem); font-weight: 700; line-height: 1;
+    letter-spacing: -0.03em; margin: 6px 0 4px;
+    color: var(--faixa);
+    font-variant-numeric: tabular-nums;
+  }
+  .temp small { font-size: .38em; font-weight: 400; letter-spacing: 0; margin-left: .08em; }
+  .temp.fora { color: var(--alerta); }
+  .temp.sem-dado { color: var(--offline); }
+  .leitura-texto { font-size: 1.05rem; margin: 0 0 16px; }
+
+  .escala { position: relative; height: 54px; margin: 6px 4px 4px; }
+  .escala .trilho { position: absolute; left: 0; right: 0; top: 14px; height: 14px; border-radius: 7px; background: #E3ECEF; }
+  .escala .segura { position: absolute; top: 14px; height: 14px; background: var(--faixa-bg); border: 2px solid var(--faixa); border-radius: 7px; }
+  .escala .marca {
+    position: absolute; top: 4px; width: 4px; height: 34px; margin-left: -2px;
+    background: var(--faixa); border-radius: 2px; transition: left .6s ease;
+  }
+  .escala .marca.fora { background: var(--alerta); }
+  .escala .rotulo { position: absolute; top: 34px; font-size: .8rem; color: var(--apagado); transform: translateX(-50%); }
+  @media (prefers-reduced-motion: reduce) { .escala .marca { transition: none; } }
+
+  .detalhes { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 18px 0 0; }
+  .detalhes dt { color: var(--apagado); }
+  .detalhes dd { margin: 0; font-weight: 700; }
+  .detalhes dd.ruim { color: var(--alerta); }
+  .detalhes dd.aviso { color: var(--silencio); }
+
+  /* ---------- silenciar ---------- */
+  .silenciar p { margin: 0 0 12px; color: var(--apagado); }
+  .silenciar label { display: block; font-size: .95rem; margin-bottom: 4px; }
+  .silenciar input {
+    width: 100%; padding: 10px 12px; border: 2px solid var(--linha); border-radius: 10px; background: #F7FAFB;
+  }
+  .botao {
+    display: block; width: 100%; margin-top: 12px; padding: 13px 16px;
+    border: 0; border-radius: 10px; background: var(--silencio); color: #fff; font-weight: 700; font-size: 1.05rem;
+    cursor: pointer;
+  }
+  .botao:disabled { background: #C8D3D7; color: #5D7680; cursor: not-allowed; }
+  .resultado { min-height: 1.45em; margin: 10px 0 0; font-weight: 700; }
+  .resultado.ok { color: var(--faixa); }
+  .resultado.erro { color: var(--alerta); }
+  .resultado.espera { color: var(--silencio); }
+
+  /* ---------- alertas ---------- */
+  .alertas ol { list-style: none; margin: 0; padding: 0; }
+  .alertas li { padding: 10px 0; border-top: 1px solid var(--linha); }
+  .alertas li:first-child { border-top: 0; padding-top: 0; }
+  .alertas .quando { color: var(--apagado); font-size: .9rem; }
+  .alertas .ruim { color: var(--alerta); font-weight: 700; }
+  .alertas .bom { color: var(--faixa); font-weight: 700; }
+  .vazio { color: var(--apagado); margin: 0; }
+  .link-botao { background: none; border: 0; padding: 0; color: #1D6FA3; text-decoration: underline; cursor: pointer; font-size: .95rem; }
+
+  /* ---------- historico ---------- */
+  .grafico-caixa { position: relative; height: 300px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .legenda { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--apagado); font-size: .9rem; margin-top: 8px; }
+  .legenda span::before { content: ""; display: inline-block; width: 14px; height: 10px; margin-right: 6px; border-radius: 3px; vertical-align: 0; }
+  .legenda .l-faixa::before { background: var(--faixa-bg); border: 2px solid var(--faixa); }
+  .legenda .l-linha::before { height: 3px; background: var(--tinta); vertical-align: .25em; }
+  .legenda .l-fora::before { width: 10px; border-radius: 50%; background: var(--alerta); }
+
+  .prova { font-size: 1.25rem; margin: 0 0 4px; }
+  .prova.ruim { color: var(--alerta); }
+  .prova-sub { color: var(--apagado); margin: 0 0 14px; }
+  .tabela-caixa { overflow: auto; max-height: 440px; }
+  thead th { position: sticky; top: 0; background: var(--papel); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--linha); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--apagado); font-weight: 400; font-size: .92rem; }
+  tr.ruim td { color: var(--alerta); font-weight: 700; }
+  td.incompleta { color: var(--silencio); }
+  .rodape { color: var(--apagado); font-size: .9rem; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+
+<header class="situacao desligada" id="situacao" role="status" aria-live="polite">
+  <strong id="situacao-texto">Conectando ao broker...</strong>
+  <span class="conexao"><span class="ponto"></span><span id="conexao-texto">aguardando o ESP32</span></span>
+</header>
+
+<main>
+  <div class="coluna">
+    <section class="agora" aria-labelledby="t-agora">
+      <h1 id="t-agora">Geladeira 01, agora</h1>
+      <div class="temp sem-dado" id="temp">--<small>°C</small></div>
+      <p class="leitura-texto" id="leitura-texto">Esperando a primeira leitura.</p>
+
+      <div class="escala" id="escala" aria-hidden="true">
+        <div class="trilho"></div>
+        <div class="segura" id="segura"></div>
+        <div class="marca" id="marca" style="left:50%"></div>
+      </div>
+
+      <dl class="detalhes">
+        <dt>Porta</dt><dd id="d-porta">--</dd>
+        <dt>Umidade</dt><dd id="d-umid">--</dd>
+        <dt>Alarme</dt><dd id="d-alarme">--</dd>
+        <dt>Buzzer</dt><dd id="d-buzzer">--</dd>
+        <dt>Última leitura</dt><dd id="d-ultima">--</dd>
+      </dl>
+    </section>
+
+    <section class="silenciar" aria-labelledby="t-silenciar">
+      <h2 id="t-silenciar">Silenciar o buzzer</h2>
+      <p>Cala o buzzer por 10 minutos. O alarme continua valendo: se o problema não for resolvido, ele volta a tocar.</p>
+      <label for="chave">Chave HMAC (fica só nesta aba e some ao fechar)</label>
+      <input id="chave" type="password" autocomplete="off" spellcheck="false">
+      <button class="botao" id="btn-silenciar" disabled>Silenciar por 10 minutos</button>
+      <p class="resultado" id="resultado" aria-live="polite"></p>
+    </section>
+
+    <section class="alertas" aria-labelledby="t-alertas">
+      <h2 id="t-alertas">Alertas recebidos</h2>
+      <p class="vazio" id="alertas-vazio">Nenhum alerta desde que esta página foi aberta.</p>
+      <ol id="alertas-lista"></ol>
+      <p class="rodape"><button class="link-botao" id="btn-notif">Avisar também com notificação do navegador</button></p>
+    </section>
+  </div>
+
+  <div class="coluna">
+    <section aria-labelledby="t-grafico">
+      <h2 id="t-grafico">Temperatura nas últimas 24 horas</h2>
+      <div class="grafico-caixa"><canvas id="grafico" role="img" aria-label="Gráfico da temperatura nas últimas 24 horas"></canvas></div>
+      <div class="legenda">
+        <span class="l-faixa">faixa permitida, 2 a 8 °C</span>
+        <span class="l-linha">temperatura medida</span>
+        <span class="l-fora">leitura fora da faixa</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="t-resumo">
+      <h2 id="t-resumo">Resumo por hora</h2>
+      <p class="prova" id="prova">Carregando o histórico...</p>
+      <p class="prova-sub" id="prova-sub"></p>
+      <div class="tabela-caixa">
+        <table>
+          <thead><tr><th>Hora</th><th>Leituras</th><th>Mínima</th><th>Máxima</th><th>Média</th><th>Fora da faixa</th><th>Falhas</th></tr></thead>
+          <tbody id="resumo-corpo"></tbody>
+        </table>
+      </div>
+      <p class="rodape" id="rodape-hist">O histórico vem do banco D1 e é atualizado a cada 5 minutos. Uma hora completa tem 180 leituras.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+// ================================================================
+//  FrioSeguro - logica do painel
+// ================================================================
+const CONFIG = {
+  WORKER_URL: "https://frioseguro.pedrollovatto.workers.dev",
+  BROKER_URL: "wss://test.mosquitto.org:8081/mqtt",       // MQTT sobre WebSocket com TLS
+  BASE:       "sis1a/pedrolovatto/geladeira01/",
+  T_MIN: 2, T_MAX: 8,
+  ESPERA_ACK_MS: 5000,                                   // tempo maximo pela confirmacao
+};
+
+const NOME_ALARME = { nenhum: "nenhum", temperatura: "temperatura fora da faixa", porta: "porta aberta há mais de 30 s", falha_sensor: "sensor sem resposta" };
+const NOME_TIPO   = { temperatura_fora: "Temperatura fora de 2 a 8 °C", porta_aberta: "Porta aberta há mais de 30 s",
+                      falha_sensor_temp: "Sensor de temperatura sem resposta", falha_sensor_porta: "Sensor da porta sem resposta" };
+const NOME_EVENTO = { inicio: "começou", lembrete: "continua", normalizado: "normalizou" };
+
+const $ = (id) => document.getElementById(id);
+// "falha_sensor" nao diz qual sensor: descobre pelo estado
+function nomeAlarme(e) {
+  if (!e || !e.alarme) return "--";
+  if (e.alarme === "falha_sensor") {
+    const temp = e.temp_c === null || e.temp_c === undefined, porta = e.porta === "desconhecida";
+    if (temp && porta) return "os dois sensores sem resposta";
+    if (porta) return "sensor da porta sem resposta";
+    if (temp) return "sensor de temperatura sem resposta";
+  }
+  return NOME_ALARME[e.alarme] || e.alarme;
+}
+const agoraS = () => Math.floor(Date.now() / 1000);
+const hora = (ts, comData) => new Date(ts * 1000).toLocaleString("pt-BR", {
+  timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  ...(comData ? { day: "2-digit", month: "2-digit" } : {}),
+});
+const num = (v, casas = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "--" : Number(v).toFixed(casas).replace(".", ",");
+
+let estado = null;          // ultimo "estado" recebido (retain)
+let online = null;          // null = ainda nao sabemos
+let offlineDesde = null;
+let recebidaEm = null;      // hora (do navegador) em que chegou a ultima telemetria
+let leituras = [];          // [{ts, temp}] para o grafico
+let pendente = null;        // comando aguardando ack: {ts, timer}
+let conectado = false;
+
+// ---------------- MQTT ----------------
+const cliente = mqtt.connect(CONFIG.BROKER_URL, {
+  clientId: "painel-frioseguro-" + Math.random().toString(16).slice(2, 10),
+  clean: true, reconnectPeriod: 3000, connectTimeout: 10000,
+});
+cliente.on("connect", () => { conectado = true; cliente.subscribe(CONFIG.BASE + "#"); desenharSituacao(); });
+cliente.on("close", () => { conectado = false; desenharSituacao(); });
+cliente.on("message", (topico, payload) => {
+  const texto = new TextDecoder().decode(payload);   // payload chega como bytes
+  const qual = topico.slice(CONFIG.BASE.length);
+  if (qual === "estado") return receberEstado(texto);
+  if (qual === "telemetria") return receberTelemetria(texto);
+  if (qual === "alerta") return receberAlerta(texto);
+  if (qual === "ack") return receberAck(texto);
+});
+
+function receberEstado(texto) {
+  let e;
+  try { e = JSON.parse(texto); } catch { return; }
+  if (e.online === false) {                    // LWT publicado pelo broker
+    if (online === true) offlineDesde = agoraS();  // so marca a hora se vimos ele cair
+    online = false;
+  } else {
+    online = true; offlineDesde = null;
+    estado = e;
+  }
+  desenharAgora(); desenharSituacao(); desenharBotao();
+}
+
+function receberTelemetria(texto) {
+  let t;
+  try { t = JSON.parse(texto); } catch { return; }
+  recebidaEm = agoraS();     // nao usa t.ts: o relogio do ESP no Wokwi pode atrasar
+  online = true; offlineDesde = null;
+  if (estado) { estado.temp_c = t.temp_c; estado.umid_pct = t.umid_pct; estado.porta = t.porta; estado.alarme = t.alarme; estado.ts = t.ts; }
+  else estado = { ...t, silenciado_ate: 0 };
+  if (t.temp_c !== null) { leituras.push({ ts: t.ts, temp: t.temp_c }); desenharGrafico(); }
+  desenharAgora(); desenharSituacao(); desenharBotao();
+}
+
+function receberAlerta(texto) {
+  let a;
+  try { a = JSON.parse(texto); } catch { return; }
+  const li = document.createElement("li");
+  const titulo = document.createElement("div");
+  titulo.className = a.evento === "normalizado" ? "bom" : "ruim";
+  titulo.textContent = `${NOME_TIPO[a.tipo] || a.tipo}: ${NOME_EVENTO[a.evento] || a.evento}`;
+  const info = document.createElement("div");
+  info.className = "quando";
+  const partes = [hora(a.ts, true)];
+  if (a.temp_c !== null && a.temp_c !== undefined) partes.push(`${num(a.temp_c)} °C`);
+  if (a.duracao_s) partes.push(`duração de ${Math.max(1, Math.round(a.duracao_s / 60))} min`);
+  info.textContent = partes.join(", ");
+  li.append(titulo, info);
+  const lista = $("alertas-lista");
+  lista.prepend(li);
+  while (lista.children.length > 20) lista.lastChild.remove();
+  $("alertas-vazio").hidden = true;
+
+  if (a.evento !== "normalizado" && "Notification" in window && Notification.permission === "granted") {
+    new Notification("FrioSeguro: " + (NOME_TIPO[a.tipo] || a.tipo), { body: info.textContent });
+  }
+}
+
+// ---------------- comando silenciar + confirmacao (ack) ----------------
+async function hmacHex(chave, texto) {
+  const enc = new TextEncoder();
+  const k = await crypto.subtle.importKey("raw", enc.encode(chave), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", k, enc.encode(texto));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function mostrarResultado(texto, tipo) {
+  const r = $("resultado");
+  r.textContent = texto;
+  r.className = "resultado " + (tipo || "");
+}
+
+$("btn-silenciar").addEventListener("click", async () => {
+  if (online === false) { mostrarResultado("ESP32 offline: o comando não pode ser executado.", "erro"); return; }
+  const chave = $("chave").value.trim();
+  if (!chave) { mostrarResultado("Digite a chave HMAC para assinar o comando.", "erro"); return; }
+  const ts = agoraS();
+  const assinatura = await hmacHex(chave, `silenciar|${ts}`);
+  cliente.publish(CONFIG.BASE + "comando", `silenciar|${ts}|${assinatura}`);
+  if (pendente) clearTimeout(pendente.timer);
+  pendente = {
+    ts,
+    timer: setTimeout(() => {
+      mostrarResultado("Sem confirmação em 5 s: o ESP32 pode estar offline. Tente de novo.", "erro");
+      pendente = null; desenharBotao();
+    }, CONFIG.ESPERA_ACK_MS),
+  };
+  mostrarResultado("Enviado. Aguardando a confirmação do ESP32...", "espera");
+  desenharBotao();
+});
+
+function receberAck(texto) {
+  // "OK: silenciar|<ts>"  ou  "RECUSADO: <motivo>|<ts>"
+  const barra = texto.lastIndexOf("|");
+  const ts = barra >= 0 ? Number(texto.slice(barra + 1)) : null;
+  if (!pendente || (ts !== null && ts !== pendente.ts)) return;   // resposta de outro comando
+  clearTimeout(pendente.timer);
+  pendente = null;
+  const corpo = barra >= 0 ? texto.slice(0, barra) : texto;
+  if (corpo.startsWith("OK")) mostrarResultado("Executado: o buzzer foi silenciado por 10 minutos.", "ok");
+  else mostrarResultado("Recusado pelo ESP32: " + corpo.replace(/^RECUSADO:\s*/, "") + ".", "erro");
+  desenharBotao();
+}
+
+$("chave").addEventListener("input", desenharBotao);
+
+// ---------------- notificacoes do navegador ----------------
+$("btn-notif").addEventListener("click", async () => {
+  if (!("Notification" in window)) { $("btn-notif").textContent = "Este navegador não tem notificações."; return; }
+  const p = await Notification.requestPermission();
+  $("btn-notif").textContent = p === "granted" ? "Notificações ligadas para esta página." : "Notificações bloqueadas no navegador.";
+});
+
+// ---------------- desenho do estado atual ----------------
+function desenharAgora() {
+  const t = estado ? estado.temp_c : null;
+  const el = $("temp");
+  const temDado = t !== null && t !== undefined;
+  const fora = temDado && (t < CONFIG.T_MIN || t > CONFIG.T_MAX);
+  el.className = "temp" + (!temDado ? " sem-dado" : fora ? " fora" : "");
+  el.firstChild.nodeValue = temDado ? num(t) : "--";
+  $("leitura-texto").textContent = !estado ? "Esperando a primeira leitura."
+    : !temDado ? "Sem leitura de temperatura: o sensor não está respondendo."
+    : fora ? "Fora da faixa de 2 a 8 °C." : "Dentro da faixa de 2 a 8 °C.";
+
+  // escala de -2 a 12 C
+  const MIN = -2, MAX = 12, pos = (v) => ((Math.min(Math.max(v, MIN), MAX) - MIN) / (MAX - MIN)) * 100;
+  const marca = $("marca");
+  marca.style.left = (temDado ? pos(t) : 50) + "%";
+  marca.className = "marca" + (fora ? " fora" : "");
+  marca.style.visibility = temDado ? "visible" : "hidden";
+
+  if (!estado) return;
+  $("d-porta").textContent = estado.porta || "--";
+  $("d-porta").className = estado.porta === "aberta" || estado.porta === "desconhecida" ? "ruim" : "";
+  $("d-umid").textContent = estado.umid_pct === null || estado.umid_pct === undefined ? "--" : num(estado.umid_pct, 0) + " %";
+  $("d-alarme").textContent = nomeAlarme(estado);
+  $("d-alarme").className = estado.alarme && estado.alarme !== "nenhum" ? "ruim" : "";
+  const sil = estado.silenciado_ate && estado.silenciado_ate > agoraS();
+  $("d-buzzer").textContent = sil ? `silenciado até ${hora(estado.silenciado_ate).slice(0, 5)}`
+    : estado.alarme && estado.alarme !== "nenhum" ? "tocando" : "quieto";
+  $("d-buzzer").className = sil ? "aviso" : (estado.alarme && estado.alarme !== "nenhum" ? "ruim" : "");
+}
+
+function desenharSituacao() {
+  const cab = $("situacao");
+  let texto, classe = "situacao", conexao;
+  if (!conectado) {
+    texto = "Sem conexão com o broker"; classe += " desligada"; conexao = "tentando reconectar";
+  } else if (online === false) {
+    texto = "ESP32 offline" + (offlineDesde ? ` desde ${hora(offlineDesde).slice(0, 5)}` : "");
+    classe += " desligada";
+    conexao = "o broker avisou que o ESP32 sumiu";
+  } else if (!estado) {
+    texto = "Aguardando o ESP32"; classe += " desligada"; conexao = "conectado ao broker";
+  } else if (estado.alarme && estado.alarme !== "nenhum") {
+    texto = "Alarme: " + nomeAlarme(estado);
+    classe += " em-alarme";
+    conexao = "ESP32 online";
+  } else {
+    texto = "Tudo certo com as vacinas"; conexao = "ESP32 online";
+  }
+  cab.className = classe;
+  $("situacao-texto").textContent = texto;
+  $("conexao-texto").textContent = conexao;
+}
+
+function desenharBotao() {
+  const b = $("btn-silenciar");
+  const temAlarme = estado && estado.alarme && estado.alarme !== "nenhum";
+  let rotulo = "Silenciar por 10 minutos";
+  if (pendente) rotulo = "Aguardando confirmação...";
+  else if (!conectado) rotulo = "Sem conexão com o broker";
+  else if (online === false) rotulo = "ESP32 offline: comando indisponível";
+  else if (online !== true) rotulo = "Aguardando o ESP32";
+  else if (!temAlarme) rotulo = "Nenhum alarme para silenciar";
+  else if (!$("chave").value.trim()) rotulo = "Digite a chave para liberar";
+  b.textContent = rotulo;
+  b.disabled = rotulo !== "Silenciar por 10 minutos";
+}
+
+// relogio da "ultima leitura" e do silencio
+setInterval(() => {
+  if (recebidaEm) {
+    const s = Math.max(0, agoraS() - recebidaEm);
+    $("d-ultima").textContent = s < 120 ? `há ${s} s` : `há ${Math.round(s / 60)} min`;
+    $("d-ultima").className = s > 60 ? "ruim" : "";
+  }
+  if (estado && estado.silenciado_ate) desenharAgora();
+}, 1000);
+
+// ---------------- historico (Worker + D1) ----------------
+async function carregarHistorico() {
+  try {
+    const [lista, resumo] = await Promise.all([
+      fetch(CONFIG.WORKER_URL + "/list?horas=24").then((r) => r.json()),
+      fetch(CONFIG.WORKER_URL + "/resumo?horas=24").then((r) => r.json()),
+    ]);
+    leituras = lista.filter((l) => l.temp_c !== null).map((l) => ({ ts: l.ts_leitura, temp: l.temp_c }));
+    desenharGrafico();
+    desenharResumo(resumo, lista.length);
+  } catch (e) {
+    $("prova").textContent = "Não consegui carregar o histórico do Worker.";
+    $("prova").className = "prova ruim";
+    $("prova-sub").textContent = "Confira se o endereço do Worker está certo e se há internet. Tento de novo em 5 minutos.";
+  }
+}
+
+function desenharResumo(linhas, total) {
+  const corpo = $("resumo-corpo");
+  corpo.textContent = "";
+  let foraTotal = 0, falhas = 0, incompletas = 0, semNada = 0;
+  // "10/11/2026 14:00" -> horario em ms, para achar horas que nem aparecem (zero leituras)
+  const emMs = (h) => Date.parse(`${h.slice(6, 10)}-${h.slice(3, 5)}-${h.slice(0, 2)}T${h.slice(11)}:00-03:00`);
+  linhas.forEach((l, i) => {
+    foraTotal += l.min_fora_da_faixa || 0;
+    falhas += l.falhas_sensor || 0;
+    if (i > 0) semNada += Math.max(0, Math.round((emMs(l.hora) - emMs(linhas[i - 1].hora)) / 3600000) - 1);
+    const meio = i > 0 && i < linhas.length - 1;          // primeira e atual podem estar pela metade
+    const incompleta = meio && l.leituras < 175;
+    if (incompleta) incompletas++;
+    const tr = document.createElement("tr");
+    if (l.min_fora_da_faixa > 0) tr.className = "ruim";
+    const celulas = [l.hora.slice(0, 5) + ", " + l.hora.slice(11), l.leituras, num(l.min_c), num(l.max_c), num(l.media_c),
+                     l.min_fora_da_faixa > 0 ? num(l.min_fora_da_faixa, 1) + " min" : "0", l.falhas_sensor];
+    celulas.forEach((v, j) => {
+      const td = document.createElement("td");
+      td.textContent = j >= 2 && j <= 4 && v !== "--" ? v + " °C" : v;
+      if (j === 1 && incompleta) td.className = "incompleta";
+      tr.append(td);
+    });
+    corpo.prepend(tr);                                     // hora mais recente em cima
+  });
+  const p = $("prova");
+  if (!linhas.length) {
+    p.textContent = "Ainda não há leituras nas últimas 24 horas."; p.className = "prova";
+    $("prova-sub").textContent = "Assim que o ESP32 enviar a primeira leitura, ela aparece aqui.";
+    return;
+  }
+  p.textContent = foraTotal > 0 ? `Nas últimas 24 h: ${num(foraTotal, 1)} min fora da faixa.` : "Nas últimas 24 h: nenhum minuto fora da faixa.";
+  p.className = "prova" + (foraTotal > 0 ? " ruim" : "");
+  const partes = [`${total} leituras gravadas`];
+  const faltando = incompletas + semNada;
+  partes.push(faltando ? `${faltando} hora(s) com leituras faltando` : "nenhuma hora com leituras faltando");
+  if (falhas) partes.push(`${falhas} leitura(s) sem sensor`);
+  $("prova-sub").textContent = partes.join(", ") + ".";
+}
+
+// ---------------- grafico (canvas, sem biblioteca) ----------------
+function desenharGrafico() {
+  const cv = $("grafico");
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, W, H);
+
+  const fim = agoraS(), ini = fim - 24 * 3600;
+  const dados = leituras.filter((l) => l.ts >= ini).sort((a, b) => a.ts - b.ts);
+  // remove duplicadas (mesma leitura vinda do Worker e do MQTT)
+  const vistos = new Set(); const pts = dados.filter((d) => !vistos.has(d.ts) && vistos.add(d.ts));
+  leituras = pts;
+
+  const temps = pts.map((p) => p.temp);
+  const yMin = Math.min(0, ...temps) - 1, yMax = Math.max(10, ...temps) + 1;
+  const m = { e: 42, d: 12, t: 10, b: 28 };
+  const x = (ts) => m.e + ((ts - ini) / (fim - ini)) * (W - m.e - m.d);
+  const y = (v) => m.t + (1 - (v - yMin) / (yMax - yMin)) * (H - m.t - m.b);
+  const css = getComputedStyle(document.documentElement);
+  const cor = (n) => css.getPropertyValue(n).trim();
+
+  // faixa permitida
+  g.fillStyle = cor("--faixa-bg");
+  g.fillRect(m.e, y(CONFIG.T_MAX), W - m.e - m.d, y(CONFIG.T_MIN) - y(CONFIG.T_MAX));
+  g.strokeStyle = cor("--faixa"); g.lineWidth = 1.5; g.setLineDash([5, 4]);
+  [CONFIG.T_MIN, CONFIG.T_MAX].forEach((v) => { g.beginPath(); g.moveTo(m.e, y(v)); g.lineTo(W - m.d, y(v)); g.stroke(); });
+  g.setLineDash([]);
+
+  // eixos
+  g.fillStyle = cor("--apagado"); g.font = "13px 'Atkinson Hyperlegible', sans-serif";
+  g.textAlign = "right"; g.textBaseline = "middle";
+  const passoY = [1, 2, 5, 10, 20].find((p) => (yMax - yMin) / p <= 7) || 20;
+  for (let v = Math.ceil(yMin / passoY) * passoY; v <= yMax; v += passoY) g.fillText(v + "°", m.e - 8, y(v));
+  g.textAlign = "center"; g.textBaseline = "top";
+  const passo = W < 520 ? 8 : 4;                         // tela estreita: menos rotulos
+  for (let h = 0; h <= 24; h += passo) {
+    const ts = ini + h * 3600;
+    g.textAlign = h === 0 ? "left" : h === 24 ? "right" : "center";   // nao corta nas bordas
+    g.fillText(h === 24 ? "agora" : hora(ts).slice(0, 5), x(ts), H - m.b + 8);
+  }
+
+  if (!pts.length) {
+    g.fillStyle = cor("--apagado"); g.textAlign = "center"; g.textBaseline = "middle"; g.font = "15px 'Atkinson Hyperlegible', sans-serif";
+    g.fillText("Sem leituras nas últimas 24 horas.", W / 2, H / 2);
+    return;
+  }
+
+  // linha (quebra quando falta leitura por mais de 2 min)
+  g.strokeStyle = cor("--tinta"); g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+  pts.forEach((p, i) => {
+    if (i === 0 || p.ts - pts[i - 1].ts > 120) g.moveTo(x(p.ts), y(p.temp)); else g.lineTo(x(p.ts), y(p.temp));
+  });
+  g.stroke();
+
+  // leituras isoladas: a linha nao tem com quem ligar, entao desenha um ponto
+  g.fillStyle = cor("--tinta");
+  pts.forEach((p, i) => {
+    const antes = i > 0 && p.ts - pts[i - 1].ts <= 120, depois = i < pts.length - 1 && pts[i + 1].ts - p.ts <= 120;
+    if (!antes && !depois) { g.beginPath(); g.arc(x(p.ts), y(p.temp), 2.5, 0, Math.PI * 2); g.fill(); }
+  });
+
+  // pontos fora da faixa
+  g.fillStyle = cor("--alerta");
+  pts.forEach((p) => {
+    if (p.temp < CONFIG.T_MIN || p.temp > CONFIG.T_MAX) { g.beginPath(); g.arc(x(p.ts), y(p.temp), 3.5, 0, Math.PI * 2); g.fill(); }
+  });
+}
+
+// faixa segura na escala do termometro
+(function () {
+  const MIN = -2, MAX = 12, pos = (v) => ((v - MIN) / (MAX - MIN)) * 100;
+  const s = $("segura");
+  s.style.left = pos(CONFIG.T_MIN) + "%";
+  s.style.width = (pos(CONFIG.T_MAX) - pos(CONFIG.T_MIN)) + "%";
+  const esc = $("escala");
+  [0, 2, 4, 6, 8, 10].forEach((v) => {
+    const r = document.createElement("span");
+    r.className = "rotulo"; r.style.left = pos(v) + "%"; r.textContent = v + "°";
+    esc.append(r);
+  });
+})();
+
+window.addEventListener("resize", desenharGrafico);
+desenharSituacao();
+carregarHistorico();
+setInterval(carregarHistorico, 5 * 60 * 1000);
+</script>
+</body>
+</html>

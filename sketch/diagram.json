@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "author": "Pedro Lovatto",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": -86.1,
+      "left": 177,
+      "attrs": { "temperature": "5", "humidity": "60" }
+    },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "sonar1",
+      "top": -152.1,
+      "left": -167.3,
+      "attrs": { "distance": "3" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 98.4,
+      "left": 213,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 236.6,
+      "left": 172.8,
+      "attrs": { "color": "blue" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
+    [ "dht1:VCC", "esp:3V3", "red", [] ],
+    [ "dht1:GND", "esp:GND.1", "black", [] ],
+    [ "dht1:SDA", "esp:D4", "green", [] ],
+    [ "sonar1:VCC", "esp:VIN", "red", [] ],
+    [ "sonar1:GND", "esp:GND.2", "black", [] ],
+    [ "sonar1:TRIG", "esp:D18", "orange", [] ],
+    [ "sonar1:ECHO", "esp:D19", "violet", [] ],
+    [ "bz1:2", "esp:D23", "red", [] ],
+    [ "bz1:1", "esp:GND.1", "black", [] ],
+    [ "btn1:1.l", "esp:D27", "blue", [] ],
+    [ "btn1:2.l", "esp:GND.2", "black", [] ]
+  ],
+  "dependencies": {}
+}
